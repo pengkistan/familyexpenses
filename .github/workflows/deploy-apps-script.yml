@@ -1,0 +1,51 @@
+# Optional: push apps-script/ to your Apps Script project on every change.
+# Does nothing until the secrets CLASPRC_JSON and SCRIPT_ID are set (see README).
+name: Deploy Apps Script
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps-script/**']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+      SCRIPT_ID: ${{ secrets.SCRIPT_ID }}
+      DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
+    steps:
+      - name: Check secrets
+        id: check
+        run: |
+          if [ -z "$CLASPRC_JSON" ] || [ -z "$SCRIPT_ID" ]; then
+            echo "CLASPRC_JSON and SCRIPT_ID are not set, so nothing is deployed. See the README."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip != 'true'
+        with:
+          node-version: 20
+
+      - name: Install clasp
+        if: steps.check.outputs.skip != 'true'
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Write clasp settings
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
+          printf '{"scriptId":"%s","rootDir":"apps-script"}' "$SCRIPT_ID" > .clasp.json
+
+      - name: Push code to Apps Script
+        if: steps.check.outputs.skip != 'true'
+        run: clasp push --force
+
+      - name: Publish a new version of the web app (same URL)
+        if: steps.check.outputs.skip != 'true' && env.DEPLOYMENT_ID != ''
+        run: clasp deploy --deploymentId "$DEPLOYMENT_ID" --description "GitHub ${GITHUB_SHA::7}"
