@@ -217,9 +217,29 @@ select.text-in { text-transform: none; appearance: none; background-image: linea
 .chip[aria-checked="true"], .chip[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .chip.sug { border-style: dashed; }
 .hint-label { align-self: center; font-size: 13px; color: var(--muted); }
-.chip.date-pick { position: relative; cursor: pointer; }
-.chip.date-pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: 0; padding: 0; cursor: pointer; }
-.chip.date-pick:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.chip svg { width: 16px; height: 16px; flex: none; }
+.chip[aria-expanded="true"]:not([aria-pressed="true"]) { border-color: var(--ink); color: var(--ink); }
+
+/* calendar (used for "Other day" and in Edit) */
+.cal-wrap { scroll-margin-top: calc(var(--top-h) + 16px); scroll-margin-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 110px); }
+.cal {
+  margin-top: 12px; padding: 10px 10px 12px; max-width: 380px;
+  border: 1px solid var(--rule-strong); border-radius: 18px; background: var(--surface);
+}
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.cal-title { font-size: 16px; font-weight: 750; letter-spacing: -0.01em; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.cal-wd { padding: 4px 0 6px; text-align: center; font-size: 12px; font-weight: 650; color: var(--muted); }
+.cal-day {
+  height: 42px; border: 0; border-radius: 12px; background: none;
+  font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.cal-day:hover:not(:disabled) { background: var(--sunk); }
+.cal-day[aria-current="date"] { box-shadow: inset 0 0 0 2px var(--rule-strong); }
+.cal-day[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); box-shadow: none; }
+.cal-day:disabled { color: var(--rule-strong); }
+.date-btn { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; text-transform: none; cursor: pointer; }
+.date-btn svg { width: 20px; height: 20px; color: var(--ink-2); flex: none; }
 
 .cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(98px, 1fr)); gap: 8px; }
 .cat {
@@ -527,7 +547,7 @@ button.rank-row:hover .rank-label { text-decoration: underline; text-underline-o
 (() => {
 'use strict';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const CONFIG = window.APP_CONFIG || {};
 
 /* ================================================================
@@ -607,6 +627,10 @@ function metaFromName(name) {
   return { name, key: `${y}-${p2(mi + 1)}`, label: `${FULL[mi]} ${y}`, total: 0, count: 0, byCategory: {}, byWhom: {}, hasWhom: true };
 }
 const shortMonth = key => FULL[+key.slice(5, 7) - 1].slice(0, 3);
+const fmtDateFull = iso => isoDate(iso).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const shiftMonth = (key, n) => { const d = new Date(+key.slice(0, 4), +key.slice(5, 7) - 1 + n, 1); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}`; };
+const chevron = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+const CAL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>';
 
 /* ================================================================
    State
@@ -629,6 +653,7 @@ const S = {
   syncing: false,
   showAllCats: false,
   charts: {},
+  cal: { add: null, edit: null },   // month shown in each calendar, null = closed
 };
 const saveCfg = () => LS.set('cfg', S.cfg);
 const savePrefs = () => LS.set('prefs', S.prefs);
@@ -920,7 +945,8 @@ const ADD_TEMPLATE = `
   </div>
   <div class="field">
     <div class="field-label" id="lblDate">Date</div>
-    <div class="chips" id="fDate" role="radiogroup" aria-labelledby="lblDate"></div>
+    <div class="chips" id="fDate" role="group" aria-labelledby="lblDate"></div>
+    <div class="cal-wrap" id="fCal" hidden></div>
   </div>
   <div class="save-bar">
     <button class="btn-primary" id="saveBtn" data-act="save" disabled>Save expense</button>
@@ -1012,13 +1038,60 @@ function renderMethods() {
 function renderDate() {
   const t = todayIso(), y = addDays(t, -1), d = S.form.date;
   const other = d !== t && d !== y;
+  const open = !!S.cal.add;
   $('#fDate').innerHTML = `
-    <button class="chip" role="radio" aria-checked="${d === t}" data-act="date" data-v="${t}">Today</button>
-    <button class="chip" role="radio" aria-checked="${d === y}" data-act="date" data-v="${y}">Yesterday</button>
-    <label class="chip date-pick" ${other ? 'aria-checked="true"' : ''}>
-      <span aria-hidden="true">${other ? esc(fmtDay(d)) : 'Other day'}</span>
-      <input type="date" id="fDateIn" max="${addDays(t, 31)}" value="${other ? d : ''}" aria-label="Pick another date">
-    </label>`;
+    <button class="chip" aria-pressed="${d === t}" data-act="date" data-v="${t}">Today</button>
+    <button class="chip" aria-pressed="${d === y}" data-act="date" data-v="${y}">Yesterday</button>
+    <button class="chip" aria-pressed="${other}" aria-expanded="${open}" aria-controls="fCal" data-act="cal-toggle" data-cal="add">${CAL_ICON}${other ? esc(fmtDay(d)) : 'Other day'}</button>`;
+  const box = $('#fCal');
+  box.hidden = !open;
+  box.innerHTML = open ? calendarHtml('add', S.cal.add, d) : '';
+}
+
+/* ---------- Calendar (the app's own, so it works the same in every browser) ---------- */
+const CAL_WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function calBounds() {
+  // The sheet accepts dates from the oldest month tab up to next month.
+  const months = monthList();
+  return { min: months.length ? months[0].key + '-01' : '', max: addDays(todayIso(), 31) };
+}
+function calendarHtml(which, key, selected) {
+  const { min, max } = calBounds();
+  const y = +key.slice(0, 4), m = +key.slice(5, 7);
+  const lead = new Date(y, m - 1, 1).getDay();
+  const days = new Date(y, m, 0).getDate();
+  const t = todayIso();
+  const prevOk = !min || shiftMonth(key, -1) >= min.slice(0, 7);
+  const nextOk = shiftMonth(key, 1) <= max.slice(0, 7);
+  let cells = '<span></span>'.repeat(lead);
+  for (let d = 1; d <= days; d++) {
+    const iso = `${key}-${p2(d)}`;
+    const off = (min && iso < min) || iso > max;
+    cells += `<button type="button" class="cal-day" data-act="cal-day" data-cal="${which}" data-v="${iso}" aria-pressed="${iso === selected}"${iso === t ? ' aria-current="date"' : ''} aria-label="${esc(fmtDateFull(iso))}"${off ? ' disabled' : ''}>${d}</button>`;
+  }
+  return `<div class="cal" role="group" aria-label="Choose a date">
+    <div class="cal-head">
+      <button type="button" class="icon-btn" data-act="cal-nav" data-cal="${which}" data-step="-1" aria-label="Previous month"${prevOk ? '' : ' disabled'}>${chevron('M15 6l-6 6 6 6')}</button>
+      <span class="cal-title" aria-live="polite">${FULL[m - 1]} ${y}</span>
+      <button type="button" class="icon-btn" data-act="cal-nav" data-cal="${which}" data-step="1" aria-label="Next month"${nextOk ? '' : ' disabled'}>${chevron('M9 6l6 6-6 6')}</button>
+    </div>
+    <div class="cal-grid">${CAL_WD.map(w => `<span class="cal-wd" aria-hidden="true">${w}</span>`).join('')}${cells}</div>
+  </div>`;
+}
+function renderCal(which) { if (which === 'add') renderDate(); else renderEditDate(); }
+function revealCal(which) {
+  const box = which === 'add' ? $('#fCal') : $('#eDateWrap');
+  if (!box) return;
+  const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  requestAnimationFrame(() => box.scrollIntoView({ block: 'nearest', behavior: smooth ? 'smooth' : 'auto' }));
+}
+function renderEditDate() {
+  const wrap = $('#eDateWrap');
+  if (!wrap || !S.editing) return;
+  const open = !!S.cal.edit;
+  wrap.innerHTML = `<button type="button" class="text-in date-btn" id="eDateBtn" data-act="cal-toggle" data-cal="edit" aria-expanded="${open}" aria-labelledby="eLblDate eDateVal">
+      <span id="eDateVal">${esc(fmtDateFull(S.editing.date))}</span>${CAL_ICON}</button>
+    ${open ? calendarHtml('edit', S.cal.edit, S.editing.date) : ''}`;
 }
 function renderSave() {
   const btn = $('#saveBtn'), hint = $('#saveHint');
@@ -1056,16 +1129,6 @@ function bindAddInputs() {
   const desc = $('#fDesc');
   desc.addEventListener('input', () => { S.form.description = desc.value; renderDescSugs(); renderAmountHints(); });
   desc.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); desc.blur(); if (canSave()) saveExpense(); } });
-  $('#view-add').addEventListener('click', e => {
-    if (e.target.id === 'fDateIn' && e.target.showPicker) { try { e.target.showPicker(); } catch (err) { /* opens natively */ } }
-  });
-  $('#view-add').addEventListener('change', e => {
-    if (e.target.id === 'fDateIn' && e.target.value) {
-      S.form.date = e.target.value;
-      S.form.dateTouched = e.target.value !== todayIso();
-      renderDate(); renderSave();
-    }
-  });
 }
 
 async function saveExpense() {
@@ -1108,6 +1171,7 @@ async function saveExpense() {
 function afterSaved(f) {
   if (f.whom) { S.prefs.lastMethod[f.whom] = f.method; savePrefs(); }
   S.form = blankForm({ whom: f.whom, date: f.date, dateTouched: f.dateTouched });
+  S.cal.add = null;
   S.form.method = defaultMethod(S.form.whom, '');
   const btn = $('#saveBtn');
   if (btn) { btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 900); }
@@ -1470,7 +1534,8 @@ function txRow(e) {
 function openEdit(key) {
   const e = findEntry(key);
   if (!e) { toast('That expense is no longer in the list. Refresh to update.'); return; }
-  S.editing = { key, original: e, whom: e.whom, method: e.method, armed: false };
+  S.editing = { key, original: e, whom: e.whom, method: e.method, date: e.date, armed: false };
+  S.cal.edit = null;
   const cats = S.boot.categories.slice();
   if (e.category && !cats.includes(e.category)) cats.push(e.category);
   const methods = S.boot.methods.slice();
@@ -1497,14 +1562,15 @@ function openEdit(key) {
         <datalist id="eDescList">${descs.map(p => `<option value="${esc(p)}">`).join('')}</datalist></div>
       <div class="field"><label class="field-label" for="eMethod">Paid with</label>
         <select class="text-in" id="eMethod">${methods.map(m => `<option ${m === e.method ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
-      <div class="field"><label class="field-label" for="eDate">Date</label>
-        <input class="text-in" id="eDate" type="date" value="${esc(e.date)}" max="${addDays(todayIso(), 31)}"></div>
+      <div class="field"><div class="field-label" id="eLblDate">Date</div>
+        <div class="cal-wrap" id="eDateWrap"></div></div>
       <p class="setup-error" id="editError" role="alert"></p>
       <div class="sheet-actions">
         <button type="button" class="btn-ghost btn-danger" id="delBtn" data-act="delete-entry">Delete</button>
         <button type="submit" class="btn-primary" id="editSave">Save changes</button>
       </div>
     </form>`);
+  renderEditDate();
   const amt = $('#eAmount');
   amt.addEventListener('input', () => { const d = amt.value.replace(/\D/g, '').slice(0, 12); amt.value = d ? nf.format(+d) : ''; });
   $('#editForm').addEventListener('submit', ev => { ev.preventDefault(); saveEdit(); });
@@ -1515,7 +1581,7 @@ async function saveEdit() {
   if (!ed) return;
   const o = ed.original;
   const entry = {
-    date: $('#eDate').value,
+    date: ed.date,
     amount: Number($('#eAmount').value.replace(/\D/g, '')),
     category: $('#eCat').value,
     whom: ed.whom || '',
@@ -1771,6 +1837,7 @@ function closeSheet() {
   $('#sheet').innerHTML = '';
   document.body.style.overflow = '';
   S.editing = null;
+  S.cal.edit = null;
   if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
 }
 
@@ -1879,7 +1946,38 @@ const ACT = {
     const v = (window.prompt('New payment method (for example OVO or DANA)') || '').trim().toUpperCase();
     if (v) { S.form.method = v; S.form.methodTouched = true; renderMethods(); }
   },
-  date: b => { S.form.date = b.dataset.v; S.form.dateTouched = b.dataset.v !== todayIso(); renderDate(); renderSave(); },
+  date: b => { S.form.date = b.dataset.v; S.form.dateTouched = b.dataset.v !== todayIso(); S.cal.add = null; renderDate(); renderSave(); },
+  'cal-toggle': b => {
+    const w = b.dataset.cal;
+    const current = w === 'add' ? S.form.date : S.editing && S.editing.date;
+    S.cal[w] = S.cal[w] ? null : (current || todayIso()).slice(0, 7);
+    renderCal(w);
+    const again = $(`[data-act="cal-toggle"][data-cal="${w}"]`);
+    if (again) again.focus({ preventScroll: true });
+    if (S.cal[w]) revealCal(w);
+  },
+  'cal-nav': b => {
+    const w = b.dataset.cal, step = b.dataset.step;
+    if (!S.cal[w]) return;
+    S.cal[w] = shiftMonth(S.cal[w], +step);
+    renderCal(w);
+    const again = $(`[data-act="cal-nav"][data-cal="${w}"][data-step="${step}"]`);
+    if (again && !again.disabled) again.focus({ preventScroll: true });
+  },
+  'cal-day': b => {
+    const w = b.dataset.cal, v = b.dataset.v;
+    S.cal[w] = null;
+    if (w === 'add') {
+      S.form.date = v;
+      S.form.dateTouched = v !== todayIso();
+      renderDate(); renderSave();
+    } else if (S.editing) {
+      S.editing.date = v;
+      renderEditDate();
+    }
+    const again = $(`[data-act="cal-toggle"][data-cal="${w}"]`);
+    if (again) again.focus({ preventScroll: true });
+  },
   'month-step': b => {
     const months = monthList();
     const i = months.findIndex(m => m.name === S.month) + Number(b.dataset.step);
@@ -1933,7 +2031,12 @@ document.addEventListener('click', e => {
   if (fn) { e.preventDefault(); fn(b, e); }
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeSheet(); hideTip(); }
+  if (e.key === 'Escape') {
+    hideTip();
+    if (S.cal.edit && S.editing) { S.cal.edit = null; renderEditDate(); $('#eDateBtn').focus(); return; }
+    if ($('#sheetWrap').hidden && S.cal.add) { S.cal.add = null; renderDate(); return; }
+    closeSheet();
+  }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('rect[data-act]')) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
 });
 document.addEventListener('pointerover', e => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) showTip(t); });

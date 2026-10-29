@@ -1,6 +1,6 @@
 // Service worker: lets the app open without a connection.
 // Your expense data is never cached here; only the app files are.
-const CACHE = 'family-expenses-v1';
+const CACHE = 'family-expenses-v2';
 const SHELL = [
   './',
   './index.html',
@@ -29,9 +29,9 @@ self.addEventListener('fetch', event => {
   const url = new URL(req.url);
 
   if (url.origin === self.location.origin) {
-    // App files: network first so updates show up at once, cache when offline.
+    // App files: network first (always revalidated) so updates show up at once, cache when offline.
     event.respondWith(
-      fetch(req)
+      fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
         .then(res => {
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put(req, copy));
